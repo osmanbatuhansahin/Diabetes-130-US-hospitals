@@ -1,0 +1,317 @@
+---
+title: "finalrep"
+author: "Osman Batuhan Şahin"
+date: "13 01 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Including Libraries
+
+```{r warning=FALSE}
+library(dplyr)
+library(stringr)
+library(corrplot)
+library(ggplot2)
+library(caret)
+library(ROSE)
+library(factoextra)
+library(NbClust)
+
+options(warn=-1)
+
+```
+
+
+## Data Description
+
+I found my dataset from UCI. You can visit page with this url: https://archive.ics.uci.edu/ml/datasets/diabetes+130-us+hospitals+for+years+1999-2008
+This dataset is about diabetes patients of 130 hospitals in the USA between 1999-2008. Contains 101,766 rows and 50 columns.
+
+```{r}
+data = read.csv("diabetic_data.csv", stringsAsFactors = TRUE)
+
+head(data)
+
+```
+
+
+## Missing values
+"?" and "Unknown/Invalid" are written for the missing data in the data set. This plots shows them. I replace them with NA.
+```{r}
+barplot(table(data$weight))
+barplot(table(data$race))
+barplot(table(data$age))
+barplot(table(data$payer_code))
+barplot(table(data$medical_specialty))
+
+data = na_if(data, "?")
+data = na_if(data, "Unknown/Invalid")
+```
+Number of missing values for each column.
+```{r}
+sapply(data, function(x) sum(is.na(x)))
+```
+weight, payer_code and and medical_specialty columns has a lot of missing values. So deleted.
+```{r}
+data = select(data, -c(weight, payer_code, medical_specialty))
+dim(data)
+```
+
+Diagnosis 2, Diagnosis 3 deleted. I only use the primary diagnosis.
+```{r}
+data = select(data, -c(diag_2, diag_3))
+dim(data)
+```
+Citoglipton and examide deleted because all rows have the same value.
+```{r}
+table(data$citoglipton)
+table(data$examide)
+
+data = select(data, -c(citoglipton, examide))
+dim(data)
+```
+
+There are 2 csv in data folder: https://archive.ics.uci.edu/ml/machine-learning-databases/00296/ . Second csv show descriptions of admission_type_id, discharge_disposition_id, admission_source_id. I used this csv file in the next steps.
+
+
+The admission_type_id feature was taking a value between 1-8. The meanings of these values represent "emergency", "elective", "new born" and "not available" values in hospitals. Due to this situation, i re-filled the values in our data according to 4 categories: "emergency", "elective", "new born" and "other".
+```{r}
+barplot(table(data$admission_type_id))
+
+data$admission_type_id <- case_when(data$admission_type_id %in% c("1","2","7") ~ "Emergency",
+                                    data$admission_type_id %in% c("5","6","8") ~ "Other",  
+                                    data$admission_type_id %in% c("3") ~ "Elective", 
+                                    data$admission_type_id %in% c("4") ~ "Newborn")
+data$admission_type_id <- as.factor(data$admission_type_id)
+
+barplot(table(data$admission_type_id))
+
+```
+
+Due to codes in csv file i changed numeric values as "Discharged to home" and "Other".
+```{r}
+barplot(table(data$discharge_disposition_id))
+data$discharge_disposition_id <- case_when(data$discharge_disposition_id %in% c("1","6","8","13","19") ~ "Discharged to home",
+                                    data$discharge_disposition_id %in% c("2","3","4","5","7","9","10","11","12","14","15","17","20","21","22","23","24","27","28","29","30","18","25","26") ~   "Other")
+
+data$discharge_disposition_id <- as.factor(data$discharge_disposition_id)
+
+
+barplot(table(data$discharge_disposition_id))
+```
+
+Due to codes in csv file i change numeric values as "Referral", "Other" and "Emergency".
+```{r}
+barplot(table(data$admission_source_id))
+
+data$admission_source_id <- case_when(data$admission_source_id %in% c("1","2","3") ~ "Referral",
+                                    data$admission_source_id %in% c("4","5","6","8","9","10","11","12","13","14","15","17","18","19","20","21","22","23","24","25","26") ~   "Other",  
+                                    TRUE ~ "Emergency")    
+
+data$admission_source_id <- as.factor(data$admission_source_id)
+
+barplot(table(data$admission_source_id))
+```
+
+Readmitted feature took 3 different values. No readmission("No"), a readmission in more than 30 days(">30"), a readmission in less than 30 days("<30"). I assumed "> 30" and "NO" values as similar cases and converted it to binary class by encoding it as 0-1. Now, this feature tells us a patient readmitted in 30 days or not. Barplot shows this dataset is imbalanced. Imbalancing is a problem for classification.
+
+```{r}
+data$readmitted <- case_when(data$readmitted %in% c(">30","NO") ~ "0",
+                              TRUE ~ "1")
+data$readmitted <- as.factor(data$readmitted)
+barplot(table(data$readmitted))
+
+```
+Removed duplicated patients. After patient_nbr and encounter_id columns removed.
+```{r}
+data <- data[!duplicated(data$patient_nbr),]
+
+data = select(data, -c(encounter_id, patient_nbr))
+
+dim(data)
+```
+
+## Missing Data imputation
+With calc_mode function, i calculated mode and imputed most frequent value for categorical columns race and gender.
+```{r}
+calc_mode <- function(x){
+  
+  # List the distinct / unique values
+  distinct_values <- unique(x)
+  
+  # Count the occurrence of each distinct value
+  distinct_tabulate <- tabulate(match(x, distinct_values))
+  
+  # Return the value with the highest occurrence
+  distinct_values[which.max(distinct_tabulate)]
+}
+
+imputeddata = data %>% 
+  mutate(gender = if_else(is.na(gender), 
+                         calc_mode(gender), 
+                         gender))
+
+imputeddata = data %>% 
+  mutate(race = if_else(is.na(race), 
+                         calc_mode(race), 
+                         race))
+dim(imputeddata)
+```
+
+diag_1 has missing values. So deleted rows with missing values.
+
+```{r}
+imputeddata = na.omit(imputeddata)
+dim(imputeddata)
+```
+
+
+This barplot shows "diag_1" column. Diagnosis has ICD codes. I regroup them to categories in primary_diagnosis column.
+```{r}
+barplot(table(imputeddata$diag_1))
+```
+I used the list of icd-9 codes for primary_diagnosis column.
+```{r warning=FALSE}
+imputeddata$diag_1 <- as.character(imputeddata$diag_1)
+
+imputeddata<- mutate(imputeddata, primary_diagnosis =
+                                          ifelse(str_detect(diag_1, "V") | str_detect(diag_1, "E"),"Other", 
+                                          # disease codes starting with V or E are in “other” category;
+                                          ifelse(str_detect(diag_1, "250"), "Diabetes",
+                                          ifelse((as.integer(diag_1) >= 390 & as.integer(diag_1) <= 459) | as.integer(diag_1) == 785, "Circulatory",
+                                          ifelse((as.integer(diag_1) >= 460 & as.integer(diag_1) <= 519) | as.integer(diag_1) == 786, "Respiratory", 
+                                          ifelse((as.integer(diag_1) >= 520 & as.integer(diag_1) <= 579) | as.integer(diag_1) == 787, "Digestive", 
+                                          ifelse((as.integer(diag_1) >= 580 & as.integer(diag_1) <= 629) | as.integer(diag_1) == 788, "Genitourinary",
+                                          ifelse((as.integer(diag_1) >= 140 & as.integer(diag_1) <= 239), "Neoplasms",  
+                                          ifelse((as.integer(diag_1) >= 710 & as.integer(diag_1) <= 739), "Musculoskeletal",          
+                                          ifelse((as.integer(diag_1) >= 800 & as.integer(diag_1) <= 999), "Injury",                    
+                                          "Other"))))))))))
+table(imputeddata$primary_diagnosis)
+```
+Removed "diag_1". Make type of primary_diagnosis factor.
+```{r}
+imputeddata$primary_diagnosis <- as.factor(imputeddata$primary_diagnosis)
+imputeddata$diag_1 <- NULL
+```
+
+## Splitting Data
+
+Imputed data splitted into training and test sets with 80:20 proportion.
+
+```{r}
+set.seed(42)
+train <- createDataPartition(imputeddata$readmitted, p = 0.8, list = FALSE)
+training <- imputeddata[train, ]
+testing <- imputeddata[-train, ]
+table(training$readmitted)
+```
+## Balancing Dataset
+
+I used "ROSE" (Random Over Sampling Examples) method for balancing dataset. ROSE method uses undersampling for class 0 (“>30” and “No”) and uses bootstrapping to increase artificial samples for class 1 (“<30”) to make the dataset balanced.
+
+```{r}
+data_rose = ROSE(readmitted ~., data = training)$data
+table(data_rose$readmitted)
+```
+## Logistic Regression
+
+I applied binary logistic regression to balanced and imputed data because "readmitted" column has binary values. Logistic Regression is the appropriate regression analysis to conduct when the dependent variable is binary.
+
+```{r warning=FALSE}
+lreg<-train(readmitted~.,data=data_rose, method="glm",family="binomial")
+```
+Confusion matrix shows model has 84.31% accuracy. 
+
+```{r warning=FALSE}
+lreg_pred <- predict(lreg, testing)
+
+confusionMatrix(lreg_pred, testing$readmitted)
+```
+Variable Importances
+```{r}
+varImp(lreg)
+```
+
+## Decision Tree
+
+I applied decision tree classification to balanced and imputed data. Decision trees are one of the first to come to mind and most reliable algorithms for classification. 
+
+```{r}
+dt<-train(readmitted~.,data=data_rose, method="rpart")
+```
+Confusion matrix shows accurary of model is 87.62%.
+```{r}
+dt_pred <- predict(dt, testing)
+
+confusionMatrix(dt_pred, testing$readmitted)
+
+```
+
+
+## Decision Tree With Imbalanced Class
+
+```{r}
+imdt<-train(readmitted~.,data=training, method="rpart")
+```
+```{r}
+imdt_pred <- predict(imdt, testing)
+
+confusionMatrix(imdt_pred, testing$readmitted)
+
+```
+If I compare statistics of the balanced and imbalanced models accuracy of imbalanced model is better. But accuracy score is not a good metric for imbalanced classification. With imbalanced model, specificity is too low and sensitivity is too high that is not good.
+
+## Kmeans Clustering
+```{r}
+kmodel <- kmeans(imputeddata[c("time_in_hospital", "num_lab_procedures", "num_procedures", "number_outpatient", "number_emergency", "num_medications", "number_inpatient", "number_diagnoses")], centers = 2)
+km_cluster <- data.frame(imputeddata[c("time_in_hospital", "num_lab_procedures", "num_procedures", "number_outpatient", "number_emergency", "num_medications", "number_inpatient", "number_diagnoses")],
+  cluster = as.factor(kmodel$cluster)
+)
+
+head(km_cluster)
+
+(BSS <- kmodel$betweenss)
+(TSS <- kmodel$totss)
+BSS / TSS * 100
+```
+```{r}
+kmodel3 <- kmeans(imputeddata[c("time_in_hospital", "num_lab_procedures", "num_procedures", "number_outpatient", "number_emergency", "num_medications", "number_inpatient", "number_diagnoses")], centers = 3)
+km_cluster3 <- data.frame(imputeddata[c("time_in_hospital", "num_lab_procedures", "num_procedures", "number_outpatient", "number_emergency", "num_medications", "number_inpatient", "number_diagnoses")],
+  cluster = as.factor(kmodel3$cluster)
+)
+
+head(km_cluster3)
+
+(BSS <- kmodel3$betweenss)
+(TSS <- kmodel3$totss)
+BSS / TSS * 100
+```
+```{r}
+kmodel4 <- kmeans(imputeddata[c("time_in_hospital", "num_lab_procedures", "num_procedures", "number_outpatient", "number_emergency", "num_medications", "number_inpatient", "number_diagnoses")], centers = 4)
+km_cluster4 <- data.frame(imputeddata[c("time_in_hospital", "num_lab_procedures", "num_procedures", "number_outpatient", "number_emergency", "num_medications", "number_inpatient", "number_diagnoses")],
+  cluster = as.factor(kmodel4$cluster)
+)
+
+head(km_cluster4)
+
+(BSS <- kmodel4$betweenss)
+(TSS <- kmodel4$totss)
+BSS / TSS * 100
+```
+I calculated the quality of the partition for 2 center, 3 center, 4 center respectively.
+```{r}
+fviz_cluster(kmodel, imputeddata[c("time_in_hospital", "num_lab_procedures", "num_procedures", "number_outpatient", "number_emergency", "num_medications", "number_inpatient", "number_diagnoses")], ellipse.type = "norm")
+```
+```{r}
+fviz_cluster(kmodel3, imputeddata[c("time_in_hospital", "num_lab_procedures", "num_procedures", "number_outpatient", "number_emergency", "num_medications", "number_inpatient", "number_diagnoses")], ellipse.type = "norm")
+```
+```{r}
+fviz_cluster(kmodel4, imputeddata[c("time_in_hospital", "num_lab_procedures", "num_procedures", "number_outpatient", "number_emergency", "num_medications", "number_inpatient", "number_diagnoses")], ellipse.type = "norm")
+```
+I plot clusters by using the fviz_cluster() function for 2 center, 3 center, 4 center respectively. With this plots and quality scores I can say 2 or 3 clusteri is enough.
+
+
+
